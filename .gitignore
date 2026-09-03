@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Virtual environments and secrets
+.venv/
+venv/
+.env
+
+# Generated data
+data/raw/*
+data/processed/*
+data/rejected/*
+!data/*/.gitkeep
+
+# Logs and IDE files
+*.log
+.idea/
+.vscode/
+.DS_Store
+
+# Personal Antigravity configuration
+.agents/
+.agent/
+AGENTS.md
+PROMPT.md
+
+# Internal / automation scripts
+scripts/backdated_commits.sh
+scripts/commits.tsv
+scripts/benchmark.py
+spark/
+
+# Markdown documentation
+*.md
+!README.md
+docs/
