@@ -1,0 +1,134 @@
+version: '3.8'
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: financial_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-financial_pipeline}
+      POSTGRES_USER: ${POSTGRES_USER:-pipeline_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/staging/create_staging.sql:/docker-entrypoint-initdb.d/01_staging.sql:ro
+      - ./sql/warehouse/create_warehouse.sql:/docker-entrypoint-initdb.d/02_warehouse.sql:ro
+      - ./sql/reconciliation/create_reconciliation.sql:/docker-entrypoint-initdb.d/03_reconciliation.sql:ro
+      - ./sql/reconciliation/views.sql:/docker-entrypoint-initdb.d/04_views.sql:ro
+      - ./sql/metadata/create_metadata.sql:/docker-entrypoint-initdb.d/05_metadata.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-pipeline_user} -d ${POSTGRES_DB:-financial_pipeline}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  spark-master:
+    image: bitnami/spark:3.5.0
+    container_name: spark_master
+    restart: unless-stopped
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    volumes:
+      - ./:/opt/pipeline
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  spark-worker-1:
+    image: bitnami/spark:3.5.0
+    container_name: spark_worker_1
+    restart: unless-stopped
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_CORES=2
+    volumes:
+      - ./:/opt/pipeline
+    deploy:
+      resources:
+        limits:
+          memory: 2.5G
+
+  spark-worker-2:
+    image: bitnami/spark:3.5.0
+    container_name: spark_worker_2
+    restart: unless-stopped
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=2G
+      - SPARK_WORKER_CORES=2
+    volumes:
+      - ./:/opt/pipeline
+    deploy:
+      resources:
+        limits:
+          memory: 2.5G
+
+  airflow-webserver:
+    image: apache/airflow:2.8.1-python3.11
+    container_name: airflow_webserver
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER:-pipeline_user}:${POSTGRES_PASSWORD:-change_me}@postgres:5432/${POSTGRES_DB:-financial_pipeline}
+      - AIRFLOW__WEBSERVER__SECRET_KEY=financial_secret_key_12345
+    ports:
+      - "8081:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./config:/opt/airflow/config
+      - ./src:/opt/airflow/src
+      - ./data:/opt/airflow/data
+    command: webserver
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  airflow-scheduler:
+    image: apache/airflow:2.8.1-python3.11
+    container_name: airflow_scheduler
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__CORE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${POSTGRES_USER:-pipeline_user}:${POSTGRES_PASSWORD:-change_me}@postgres:5432/${POSTGRES_DB:-financial_pipeline}
+      - AIRFLOW__WEBSERVER__SECRET_KEY=financial_secret_key_12345
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - ./config:/opt/airflow/config
+      - ./src:/opt/airflow/src
+      - ./data:/opt/airflow/data
+    command: scheduler
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+volumes:
+  pgdata:

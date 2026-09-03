@@ -1,0 +1,28 @@
+project:
+  name: distributed-financial-pipeline
+  random_seed: 42
+
+data:
+  raw_dir: data/raw
+  processed_dir: data/processed
+  rejected_dir: data/rejected
+  base_date: "2023-01-01T00:00:00"  # PaySim step 0 = this UTC timestamp; step N = base + N hours
+
+spark:
+  master: "local[*]"
+  shuffle_partitions: 16
+  driver_memory: "4g"
+
+processing:
+  batch_size: 50000
+  money_precision: 2
+  reconciliation_tolerance: "0.01"
+
+anomalies:
+  missing_settlement_rate: 0.02
+  duplicate_transaction_rate: 0.01
+  duplicate_settlement_rate: 0.01
+  amount_mismatch_rate: 0.01
+  invalid_record_rate: 0.005
+  orphan_settlement_rate: 0.005
+  delayed_settlement_rate: 0.01
