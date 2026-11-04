@@ -127,4 +127,15 @@ make up
 # - PostgreSQL: localhost:5432
 ```
 
+---
+
+## Financial Engineering Conventions
+
+### FX Rate Definition & Conversion Direction
+- **Rate Convention:** FX rates represent **units of target currency (USD) per 1 unit of source currency** (e.g., `EUR/USD ≈ 1.104970` means $1\text{ EUR} = 1.104970\text{ USD}$; `INR/USD ≈ 0.011976` means $1\text{ INR} = 0.011976\text{ USD}$).
+- **Conversion Formula:** `amount_usd = (amount * rate).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)`.
+- **Identity Rate:** `USD/USD` is defined as `1.000000` across all effective timestamps.
+- **Missing FX Rates:** Transactions with missing rates (or timestamps pre-dating available rates) receive `NULL` for `amount_usd` and `fx_rate`, and are flagged as `MISSING_FX_RATE`.
+
+
 

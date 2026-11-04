@@ -92,8 +92,9 @@ def apply_fx_rates(
         (F.col("_rn") == 1) | F.col("_fx_rate").isNull()
     ).drop("_rn")
 
-    # Compute amount in USD (amount / rate gives USD if pair is CCY/USD)
-    # If rate is null (missing pair or no historical rate) → flag MISSING_FX_RATE
+    # Compute amount in USD: rate is defined as units of USD per 1 unit of source currency
+    # Formula: amount_usd = (amount * fx_rate).cast(DecimalType(18, 2))
+    # If rate is null (missing pair or pre-dates first available rate) → flag MISSING_FX_RATE
     best_rate = best_rate.withColumn(
         "fx_rate",
         F.col("_fx_rate").cast(DecimalType(18, 6)),
@@ -101,7 +102,7 @@ def apply_fx_rates(
         "amount_usd",
         F.when(
             F.col("_fx_rate").isNotNull(),
-            (F.col("amount") / F.col("_fx_rate")).cast(DecimalType(18, 2)),
+            (F.col("amount") * F.col("_fx_rate")).cast(DecimalType(18, 2)),
         ).otherwise(F.lit(None).cast(DecimalType(18, 2))),
     ).withColumn(
         "fx_issue",

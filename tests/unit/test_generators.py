@@ -48,6 +48,13 @@ class TestFxRates:
         for absent in ABSENT_PAIRS:
             assert absent not in pairs, f"Absent pair {absent} found in generated rates!"
 
+    def test_usd_usd_identity_generated(self):
+        rates = generate_fx_rates(seed=42)
+        usd_rates = [r for r in rates if r["currency_pair"] == "USD/USD"]
+        assert len(usd_rates) > 0
+        for r in usd_rates:
+            assert r["rate"] == "1.000000"
+
     def test_write_fx_rates_parquet(self, tmp_path: Path):
         rates = generate_fx_rates(seed=42)
         out_file = tmp_path / "fx_rates.parquet"

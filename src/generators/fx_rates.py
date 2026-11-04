@@ -2,8 +2,14 @@
 fx_rates.py — Generate synthetic FX rate table.
 
 Currencies: USD, EUR, GBP, INR, NGN, KES
-Pairs: all combinations except NGN/KES and KES/NGN (intentionally absent
-       to trigger MISSING_FX_RATE anomalies downstream).
+Pairs: all combinations including USD/USD identity (rate=1.000000), except
+       NGN/KES and KES/NGN (intentionally absent).
+
+FX Rate Convention:
+- rate = units of target currency (USD) per 1 unit of source currency (e.g. for EUR/USD,
+  rate ≈ 1.104970 means 1 EUR = 1.104970 USD; for INR/USD, rate ≈ 0.011976 means 1 INR = 0.011976 USD).
+- amount_usd = amount * rate, rounded using ROUND_HALF_UP to 2 decimal places.
+
 Rates are stored at 6 decimal places as Decimal-serialised strings.
 One rate per pair per 24-hour step (743 steps ≈ 30 days).
 """
@@ -113,6 +119,16 @@ def generate_fx_rates(seed: int = 42) -> list[dict]:
                     "effective_timestamp": ts.isoformat(),
                 }
             )
+
+    # Generate USD/USD identity rate (1 USD = 1.000000 USD across all time windows)
+    for ts in daily_starts:
+        records.append(
+            {
+                "currency_pair": "USD/USD",
+                "rate": "1.000000",
+                "effective_timestamp": ts.isoformat(),
+            }
+        )
 
     logger.info("Generated %d FX rate rows for %d pairs", len(records), len(records) // n_days)
     return records
