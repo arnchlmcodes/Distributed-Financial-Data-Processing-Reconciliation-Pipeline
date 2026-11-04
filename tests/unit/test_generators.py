@@ -3,12 +3,15 @@ test_generators.py — Unit tests for M2 synthetic generators.
 """
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from src.generators.enrich_paysim import (
@@ -25,6 +28,7 @@ from src.generators.generate_settlements import (
 )
 from src.generators.inject_anomalies import (
     build_manifest,
+    inject_anomalies,
 )
 
 
@@ -156,3 +160,113 @@ class TestSettlementsAndAnomalies:
         assert len(manifest_df) == 1
         assert "anomaly_id" in manifest_df.columns
         assert manifest_df.iloc[0]["anomaly_type"] == "AMOUNT_MISMATCH"
+
+    def test_manifest_data_consistency(self, tmp_path: Path):
+        """Verify that every manifest entry is directly observable in the mutated parquet data."""
+        # 1. Create a synthetic enriched transactions parquet
+        n = 50
+        txn_data = {
+            "transaction_id": [f"tx-{i}" for i in range(n)],
+            "currency": ["USD" if i % 2 == 0 else "EUR" for i in range(n)],
+            "amount": [f"{(i + 1) * 10}.00" for i in range(n)],
+            "fx_pair": ["USD/USD" if i % 2 == 0 else "EUR/USD" for i in range(n)],
+            "transaction_timestamp": [f"2023-01-01T{(i % 24):02d}:00:00+00:00" for i in range(n)],
+            "step": [i % 24 for i in range(n)],
+            "type": ["PAYMENT" for _ in range(n)],
+            "nameOrig": [f"C{i}" for i in range(n)],
+            "oldbalanceOrg": ["1000.00" for _ in range(n)],
+            "newbalanceOrig": ["900.00" for _ in range(n)],
+            "nameDest": [f"M{i}" for i in range(n)],
+            "oldbalanceDest": ["0.00" for _ in range(n)],
+            "newbalanceDest": ["100.00" for _ in range(n)],
+            "isFraud": [0 for _ in range(n)],
+            "isFlaggedFraud": [0 for _ in range(n)],
+        }
+        txn_file = tmp_path / "enriched.parquet"
+        stl_file = tmp_path / "settlements.parquet"
+        manifest_file = tmp_path / "manifest.parquet"
+        pq.write_table(pa.Table.from_pandas(pd.DataFrame(txn_data)), txn_file)
+
+        # 2. Generate settlements with anomalies
+        prior_anomalies = generate_settlements(
+            input_parquet=txn_file,
+            output_parquet=stl_file,
+            seed=42,
+            missing_settlement_rate=0.1,
+            duplicate_settlement_rate=0.1,
+            amount_mismatch_rate=0.1,
+        )
+
+        # 3. Inject remaining anomalies and mutate the datasets
+        inject_anomalies(
+            enriched_parquet=txn_file,
+            settlements_parquet=stl_file,
+            output_manifest=manifest_file,
+            seed=42,
+            prior_anomalies=prior_anomalies,
+            duplicate_transaction_rate=0.1,
+            invalid_record_rate=0.1,
+            orphan_settlement_rate=0.1,
+            delayed_settlement_rate=0.1,
+            missing_fx_rate=0.1,
+        )
+
+        # 4. Read back mutated datasets and manifest
+        updated_txns = pq.read_table(txn_file).to_pandas()
+        updated_stls = pq.read_table(stl_file).to_pandas()
+        manifest = pq.read_table(manifest_file).to_pandas()
+
+        assert len(manifest) > 0
+
+        # Build lookup indices for consistency verification
+        txn_ids_in_txns = set(updated_txns["transaction_id"].dropna().tolist())
+        stl_ids_in_stls = set(updated_stls["settlement_id"].tolist())
+
+        # 5. Verify every manifest row is observable in the data
+        for _, row in manifest.iterrows():
+            anom_type = row["anomaly_type"]
+            tid = row["transaction_id"]
+            sid = row["settlement_id"]
+            details = json.loads(row["anomaly_details"]) if isinstance(row["anomaly_details"], str) else row["anomaly_details"]
+
+            if anom_type == "DUPLICATE_TXN":
+                count = len(updated_txns[updated_txns["transaction_id"] == tid])
+                assert count >= 2, f"DUPLICATE_TXN {tid} not duplicated in transactions (count={count})"
+
+            elif anom_type == "INVALID_RECORD":
+                # Either empty/null transaction_id or negative amount
+                matching_corrupt = updated_txns[
+                    (updated_txns["transaction_id"] == "") |
+                    (updated_txns["amount"] == "-1.00")
+                ]
+                assert len(matching_corrupt) > 0, "INVALID_RECORD not found in transactions"
+
+            elif anom_type == "MISSING_FX_RATE":
+                matching = updated_txns[updated_txns["transaction_id"] == tid]
+                assert len(matching) > 0
+                ts = matching.iloc[0]["transaction_timestamp"]
+                assert "2022" in str(ts), f"MISSING_FX_RATE {tid} timestamp not pre-dated ({ts})"
+
+            elif anom_type == "ORPHAN_SETTLEMENT":
+                assert sid in stl_ids_in_stls, f"ORPHAN_SETTLEMENT {sid} not present in settlements"
+                assert tid not in txn_ids_in_txns, f"ORPHAN_SETTLEMENT txn_id {tid} unexpectedly found in transactions"
+
+            elif anom_type == "DELAYED_SETTLEMENT":
+                assert sid in stl_ids_in_stls
+                matching_stl = updated_stls[updated_stls["settlement_id"] == sid].iloc[0]
+                expected_ts = details["delayed_settlement_timestamp"]
+                assert matching_stl["settlement_timestamp"] == expected_ts
+
+            elif anom_type == "MISSING_SETTLEMENT":
+                matching = updated_stls[updated_stls["transaction_id"] == tid]
+                assert len(matching) == 0, f"MISSING_SETTLEMENT {tid} unexpectedly found in settlements"
+
+            elif anom_type == "DUPLICATE_SETTLEMENT":
+                matching = updated_stls[updated_stls["transaction_id"] == tid]
+                assert len(matching) >= 2, f"DUPLICATE_SETTLEMENT {tid} has {len(matching)} settlements (expected >=2)"
+
+            elif anom_type == "AMOUNT_MISMATCH":
+                matching_stl = updated_stls[updated_stls["transaction_id"] == tid]
+                assert len(matching_stl) > 0
+                assert details["original_amount"] != details["settled_amount"]
+                assert matching_stl.iloc[0]["settled_amount"] == details["settled_amount"]
